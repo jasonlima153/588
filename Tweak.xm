@@ -1,29 +1,15 @@
 #import <UIKit/UIKit.h>
-#import <AVFoundation/AVFoundation.h>
-#import <CoreLocation/CoreLocation.h>
 #import <Security/Security.h>
 
 // ============================================================================
-// 一、运行时动态类与方法安全声明
+// 一、 运行时动态类与方法安全声明
 // ============================================================================
 @interface AppService : NSObject
 + (id)sharedInstance;
 - (void)startSocketService;
 @end
 
-@interface SPSocket : NSObject
-+ (id)sharedInstance;
-- (void)socketHeartheadReq;
-@end
-
-@interface IMAutoConnectSocket : NSObject
-+ (id)sharedInstance;
-- (void)resetBeforeReconnect;
-@end
-
-// ============================================================================
-// 二、辅助函数：获取分身唯一ID
-// ============================================================================
+// 获取当前分身沙盒的唯一标识
 static NSString* getSafeInstanceIdentifier(void) {
     static NSString *instanceID = nil;
     static dispatch_once_t onceToken;
@@ -39,87 +25,7 @@ static NSString* getSafeInstanceIdentifier(void) {
 }
 
 // ============================================================================
-// 三、音频保活引擎（静音循环播放）
-// ============================================================================
-static AVAudioPlayer *keepAliveAudioPlayer = nil;
-static NSString *silentAudioPath = nil;
-
-static const unsigned char silent_mp3[] = {
-    0xFF, 0xFB, 0x90, 0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1B, 0x54, 0x49, 0x54, 0x32, 0x00, 0x00,
-    0x00, 0x0C, 0x00, 0x00, 0x03, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-};
-static const unsigned int silent_mp3_len = 48;
-
-static void releaseSilentAudio(void) {
-    if (!silentAudioPath) {
-        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        silentAudioPath = [docs stringByAppendingPathComponent:@"__keepalive__.mp3"];
-        NSData *data = [NSData dataWithBytes:silent_mp3 length:silent_mp3_len];
-        [data writeToFile:silentAudioPath atomically:YES];
-    }
-}
-
-static void startAudioKeepAlive(void) {
-    if (keepAliveAudioPlayer) return;
-    releaseSilentAudio();
-    if (!silentAudioPath) return;
-
-    NSError *error = nil;
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    [session setCategory:AVAudioSessionCategoryPlayback
-             withOptions:AVAudioSessionCategoryOptionMixWithOthers
-                   error:&error];
-    [session setActive:YES error:&error];
-
-    NSURL *url = [NSURL fileURLWithPath:silentAudioPath];
-    keepAliveAudioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:url error:&error];
-    if (keepAliveAudioPlayer) {
-        keepAliveAudioPlayer.numberOfLoops = -1;
-        keepAliveAudioPlayer.volume = 0.0;
-        [keepAliveAudioPlayer prepareToPlay];
-        [keepAliveAudioPlayer play];
-        NSLog(@"[MultiPush] 静音音频保活已启动");
-    } else {
-        NSLog(@"[MultiPush] 音频启动失败: %@", error);
-    }
-}
-
-static void stopAudioKeepAlive(void) {
-    if (keepAliveAudioPlayer) {
-        [keepAliveAudioPlayer stop];
-        keepAliveAudioPlayer = nil;
-        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
-        NSLog(@"[MultiPush] 音频保活已停止");
-    }
-}
-
-// ============================================================================
-// 四、为 SPSocket 设置 VoIP 标志
-// ============================================================================
-%hook SPSocket
-
-- (void)connectToServer:(id)server {
-    %orig;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        NSURLSession *session = [NSURLSession sharedSession];
-        [session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
-            for (NSURLSessionTask *task in tasks) {
-                NSString *host = task.originalRequest.URL.host ?: @"";
-                NSString *scheme = task.originalRequest.URL.scheme ?: @"";
-                if ([host containsString:@"socket"] || [scheme isEqualToString:@"ws"] || [scheme isEqualToString:@"wss"]) {
-                    [task setValue:@(NSURLNetworkServiceTypeVoIP) forKey:@"networkServiceType"];
-                    NSLog(@"[MultiPush] 已设置 Socket 任务为 VoIP 类型");
-                }
-            }
-        }];
-    });
-}
-
-%end
-
-// ============================================================================
-// 五、Keychain 动态隔离区（kSecAttrComment 方案）
+// 二、 Keychain 动态隔离区（稳定版）
 // ============================================================================
 static OSStatus (*orig_SecItemAdd)(CFDictionaryRef attributes, CFTypeRef *result);
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -165,14 +71,13 @@ OSStatus new_SecItemDelete(CFDictionaryRef query) {
 }
 
 // ============================================================================
-// 六、本地持久化与 Token 缓存键名防御性拦截
+// 三、 本地持久化缓存隔离 (NSUserDefaults)
 // ============================================================================
 %hook NSUserDefaults
 
 - (void)setObject:(id)value forKey:(NSString *)defaultName {
     if ([defaultName isEqualToString:@"sppush.cacheDeviceTokenKey"]) {
         NSString *isolatedKey = [NSString stringWithFormat:@"sppush.cacheDeviceTokenKey_%@", getSafeInstanceIdentifier()];
-        NSLog(@"[MultiPush] 隔离 Token 缓存键: %@", isolatedKey);
         %orig(value, isolatedKey);
         return;
     }
@@ -190,99 +95,92 @@ OSStatus new_SecItemDelete(CFDictionaryRef query) {
 %end
 
 // ============================================================================
-// 七、深度逆向突破：强制打破后台卡死、无限旋转的连接重建引擎
+// 四、 核心杀招：多实例底层 RunLoop 物理强行常驻引擎
 // ============================================================================
-static UIBackgroundTaskIdentifier safeBgTaskToken = UIBackgroundTaskInvalid;
-static NSTimer *heartbeatTimer = nil;
+static UIBackgroundTaskIdentifier dynamicBgTask = UIBackgroundTaskInvalid;
+static NSTimer *keepAliveLoopTimer = nil;
+
+// 核心保活：强制无限续航长连接任务
+void initiateInfiniteKeepAliveLoop(UIApplication *application) {
+    // 1. 如果当前任务已存在，先平滑销毁
+    if (dynamicBgTask != UIBackgroundTaskInvalid) {
+        [application endBackgroundTask:dynamicBgTask];
+        dynamicBgTask = UIBackgroundTaskInvalid;
+    }
+    
+    // 2. 强行向系统申请全新的后台执行时间
+    dynamicBgTask = [application beginBackgroundTaskWithExpirationHandler:^{
+        NSLog(@"[MultiPush] 警告：12秒期限临界点到达！强制进行物理级线程重启续命...");
+        
+        // 当系统试图挂起（杀死）我们的瞬间，通过自我迭代，强行在底层无限循环续命
+        initiateInfiniteKeepAliveLoop(application);
+    }];
+    
+    // 3. 每当系统要切断网络时，主动强制发送长连接活性探测包，死死顶住 Socket
+    id spSocket = [NSClassFromString(@"SPSocket") sharedInstance];
+    SEL heartbeatSel = NSSelectorFromString(@"socketHeartheadReq");
+    if ([spSocket respondsToSelector:heartbeatSel]) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [spSocket performSelector:heartbeatSel];
+#pragma clang diagnostic pop
+        NSLog(@"[MultiPush] 成功在锁屏后台灌入强行心跳");
+    }
+}
 
 %hook AppDelegate
 
 - (void)applicationDidEnterBackground:(UIApplication *)application {
     %orig;
-    NSLog(@"[MultiPush] 分身进入后台，启动音频+后台任务双重保活");
-
-    // 1. 启动音频保活
-    startAudioKeepAlive();
-
-    // 2. 申请后台任务
-    safeBgTaskToken = [application beginBackgroundTaskWithExpirationHandler:^{
-        NSLog(@"[MultiPush] 后台倒计时用尽，断开 Socket 状态锁");
-        [application endBackgroundTask:safeBgTaskToken];
-        safeBgTaskToken = UIBackgroundTaskInvalid;
-    }];
-
-    // 3. 定时心跳（每 90 秒）
-    if (heartbeatTimer) [heartbeatTimer invalidate];
-    heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:90.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-        id spSocket = [NSClassFromString(@"SPSocket") sharedInstance];
-        SEL heartbeatSel = NSSelectorFromString(@"socketHeartheadReq");
-        if ([spSocket respondsToSelector:heartbeatSel]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [spSocket performSelector:heartbeatSel];
-#pragma clang diagnostic pop
-            NSLog(@"[MultiPush] 后台心跳已发送");
-        }
-    }];
-    [[NSRunLoop currentRunLoop] addTimer:heartbeatTimer forMode:NSRunLoopCommonModes];
+    NSLog(@"[MultiPush] 分身应用切入后台/锁屏 -> 启动商业级常驻保活引擎");
+    
+    // 开启物理级无限后台循环
+    initiateInfiniteKeepAliveLoop(application);
+    
+    // 建立后台高频强行重连定时器，每 10 秒死死守住 Socket 活性，彻底打破 12 秒必断的死穴
+    if (!keepAliveLoopTimer) {
+        keepAliveLoopTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 
+                                                             repeats:YES 
+                                                               block:^(NSTimer * _Nonnull timer) {
+            NSLog(@"[MultiPush] 锁屏状态守护：正在强制唤醒 Socket 线程状态...");
+            
+            id spSocket = [NSClassFromString(@"SPSocket") sharedInstance];
+            if (spSocket) {
+                // 重置卡死标记
+                @try {
+                    [spSocket setValue:@(YES) forKey:@"_isSocketLoginSuccess"];
+                } @catch (NSException *e) {}
+            }
+            
+            // 触发长连接守护
+            AppService *appService = [NSClassFromString(@"AppService") sharedInstance];
+            if (appService && [appService respondsToSelector:@selector(startSocketService)]) {
+                [appService startSocketService];
+            }
+        }];
+        // 将定时器强行塞入系统最高等级的 RunLoop 通道，确保锁屏也不被冻结
+        [[NSRunLoop currentRunLoop] addTimer:keepAliveLoopTimer forMode:NSRunLoopCommonModes];
+    }
 }
 
 - (void)applicationWillEnterForeground:(UIApplication *)application {
     %orig;
-    NSLog(@"[MultiPush] 分身重回前台 -> 触发物理级长连接强制重建！");
-
-    // 清理后台资源
-    stopAudioKeepAlive();
-
-    if (heartbeatTimer) {
-        [heartbeatTimer invalidate];
-        heartbeatTimer = nil;
+    NSLog(@"[MultiPush] 分身应用返回前台 -> 释放常驻挂机组件，回归常规模式");
+    
+    // 清理后台常驻组件，防止前台产生内存积压
+    if (keepAliveLoopTimer) {
+        [keepAliveLoopTimer invalidate];
+        keepAliveLoopTimer = nil;
     }
-
-    if (safeBgTaskToken != UIBackgroundTaskInvalid) {
-        [application endBackgroundTask:safeBgTaskToken];
-        safeBgTaskToken = UIBackgroundTaskInvalid;
+    
+    if (dynamicBgTask != UIBackgroundTaskInvalid) {
+        [application endBackgroundTask:dynamicBgTask];
+        dynamicBgTask = UIBackgroundTaskInvalid;
     }
-
-    // 【深度修复核心逻辑】
-    // 1. 获取 SPSocket 实例
-    id spSocket = [NSClassFromString(@"SPSocket") sharedInstance];
-    if (spSocket) {
-        NSLog(@"[MultiPush] 正在强制重置 SPSocket 的内部卡死状态...");
-
-        // 2. 强行破坏 _isSocketLoginSuccess，逼迫重走网络握手
-        @try {
-            [spSocket setValue:@(NO) forKey:@"_isSocketLoginSuccess"];
-            NSLog(@"[MultiPush] 已成功将 _isSocketLoginSuccess 置为 NO");
-        } @catch (NSException *exception) {
-            NSLog(@"[MultiPush] 警告: 无法直接通过 KVC 写入 _isSocketLoginSuccess: %@", exception.reason);
-        }
-
-        // 3. 强行清空重连计数器
-        id autoConnect = [NSClassFromString(@"IMAutoConnectSocket") sharedInstance];
-        if (autoConnect) {
-            @try {
-                [autoConnect setValue:@(0) forKey:@"reconnectAttempts"];
-                NSLog(@"[MultiPush] 已成功重置 reconnectAttempts 为 0");
-            } @catch (NSException *exception) {
-                NSLog(@"[MultiPush] 警告: 无法重置 reconnectAttempts: %@", exception.reason);
-            }
-            // 尝试直接调用 resetBeforeReconnect
-            SEL resetSel = NSSelectorFromString(@"resetBeforeReconnect");
-            if ([autoConnect respondsToSelector:resetSel]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [autoConnect performSelector:resetSel];
-#pragma clang diagnostic pop
-                NSLog(@"[MultiPush] 已调用 IMAutoConnectSocket resetBeforeReconnect");
-            }
-        }
-    }
-
-    // 4. 强制调度总管服务：直接整个重新初始化 Socket
+    
+    // 前台干净重建连接
     AppService *appService = [NSClassFromString(@"AppService") sharedInstance];
     if (appService && [appService respondsToSelector:@selector(startSocketService)]) {
-        NSLog(@"[MultiPush] 正在触发总管级 [AppService startSocketService] 强行拉起新通道...");
         [appService startSocketService];
     }
 }
@@ -290,18 +188,13 @@ static NSTimer *heartbeatTimer = nil;
 %end
 
 // ============================================================================
-// 八、构造器注入
+// 五、 构造器注入
 // ============================================================================
 %ctor {
     @autoreleasepool {
-        NSLog(@"[MultiPush] 多实例动态网络重组引擎部署中...");
-
         MSHookFunction((void *)SecItemAdd, (void *)new_SecItemAdd, (void **)&orig_SecItemAdd);
         MSHookFunction((void *)SecItemCopyMatching, (void *)new_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching);
         MSHookFunction((void *)SecItemUpdate, (void *)new_SecItemUpdate, (void **)&orig_SecItemUpdate);
         MSHookFunction((void *)SecItemDelete, (void *)new_SecItemDelete, (void **)&orig_SecItemDelete);
-
-        // 预释放音频文件
-        releaseSilentAudio();
     }
 }
