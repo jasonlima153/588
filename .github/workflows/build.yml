@@ -27,6 +27,10 @@ jobs:
           git clone https://github.com/theos/sdks.git "$HOME/theos/sdks"
         fi
 
+    - name: Install ldid
+      run: |
+        brew install ldid
+
     - name: Compile Dylib
       run: |
         export THEOS=$HOME/theos
