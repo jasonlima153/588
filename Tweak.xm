@@ -100,11 +100,7 @@ static void stopAudioKeepAlive(void) {
                 NSString *host = task.originalRequest.URL.host ?: @"";
                 NSString *scheme = task.originalRequest.URL.scheme ?: @"";
                 if ([host containsString:@"socket"] || [scheme isEqualToString:@"ws"] || [scheme isEqualToString:@"wss"]) {
-                    if (@available(iOS 13.0, *)) {
-                        task.networkServiceType = NSURLSessionTaskNetworkServiceTypeVoIP;
-                    } else {
-                        [task setValue:@(NSURLRequestNetworkServiceTypeVoIP) forKey:@"networkServiceType"];
-                    }
+                    [task setValue:@(NSURLNetworkServiceTypeVoIP) forKey:@"networkServiceType"];
                     NSLog(@"[MultiPush] 已设置 Socket 任务为 VoIP 类型");
                 }
             }
