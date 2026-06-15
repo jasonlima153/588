@@ -3,8 +3,6 @@ name: Build OctopusIMMultiPush Tweak
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'OctopusIMMultiPush/**'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -24,7 +22,6 @@ jobs:
         run: |
           bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)" \
             || true
-          # 如果官方安装失败，手动克隆
           if [ ! -d "$THEOS" ]; then
             git clone --recursive https://github.com/theos/theos.git "$THEOS"
           fi
@@ -33,19 +30,12 @@ jobs:
       - name: Setup Theos environment
         run: |
           export THEOS=${{ env.THEOS }}
-          # 确保 NIC (Theos NIC) 可用
-          if [ ! -f "$THEOS/bin/nic.pl" ]; then
-            echo "Warning: NIC not found, continuing..."
-          fi
-          # 验证 Theos 结构
           ls -la "$THEOS/makefiles/" || echo "makefiles not found"
           ls -la "$THEOS/lib/" || echo "lib not found"
 
       - name: Build Tweak
         run: |
-          cd OctopusIMMultiPush
           export THEOS=${{ env.THEOS }}
-          # 使用 Theos 编译
           make clean
           make FINALPACKAGE=1
 
@@ -54,14 +44,13 @@ jobs:
         with:
           name: OctopusIMMultiPush-${{ github.sha }}
           path: |
-            OctopusIMMultiPush/.theos/obj/debug/OctopusIMMultiPush.dylib
-            OctopusIMMultiPush/.theos/packages/*.deb
+            .theos/obj/debug/OctopusIMMultiPush.dylib
+            .theos/packages/*.deb
           if-no-files-found: warn
           retention-days: 30
 
   build-standalone:
     runs-on: macos-14
-    needs: []  # 独立运行，不依赖 Theos
 
     steps:
       - name: Checkout repository
@@ -69,7 +58,6 @@ jobs:
 
       - name: Install iOS SDK dependencies
         run: |
-          # 使用 xcode-select 确保正确的 SDK
           sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer 2>/dev/null || true
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-path
@@ -78,39 +66,24 @@ jobs:
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           CLANG=$(xcrun --sdk iphoneos --find clang)
-
           echo "SDK: $SDK_PATH"
           echo "Clang: $CLANG"
-
-          # 创建构建目录
           mkdir -p build
-
-          # 编译 Tweak.xm 为 .xm (Logos) -> .m (Objective-C)
-          # 使用 Theos 的 logos.pl 预处理器，如果没有则手动处理
-          cd OctopusIMMultiPush
 
           # 尝试获取 logos 预处理器
           LOGOS_PL=""
           if [ -f "${{ env.THEOS }}/bin/logos.pl" ]; then
             LOGOS_PL="${{ env.THEOS }}/bin/logos.pl"
-          elif command -v logos &> /dev/null; then
-            LOGOS_PL=$(which logos)
           fi
 
           if [ -n "$LOGOS_PL" ]; then
             echo "Using Logos preprocessor: $LOGOS_PL"
-            perl "$LOGOS_PL" Tweak.xm > build/Tweak.m 2>&1 || {
-              echo "Logos preprocessing failed, trying alternative..."
-              cp Tweak.xm build/Tweak.m
-            }
+            perl "$LOGOS_PL" Tweak.xm > build/Tweak.m 2>&1 || cp Tweak.xm build/Tweak.m
           else
-            echo "No Logos preprocessor found, copying as-is for manual processing"
+            echo "No Logos preprocessor found, copying as-is"
             cp Tweak.xm build/Tweak.m
           fi
 
-          cd ..
-
-          # 编译为动态库
           $CLANG \
             -arch arm64 \
             -isysroot "$SDK_PATH" \
