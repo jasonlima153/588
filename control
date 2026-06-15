@@ -1,3 +1,8 @@
-ARCHS = arm64
-TARGET = iphone:clang:latest:15.0
-INSTALL_TARGET_PROCESSES = OctopusIM
+Package: com.jasonlima153.octopusimmultipush
+Name: OctopusIMMultiPush
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Multi-instance push isolation for 558 (OctopusIM)
+Maintainer: jasonlima153
+Author: jasonlima153
+Section: Tweaks
