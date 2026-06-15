@@ -7,6 +7,6 @@ TWEAK_NAME := OctopusIMMultiPush
 
 OctopusIMMultiPush_FILES := Tweak.xm
 OctopusIMMultiPush_CFLAGS := -fobjc-arc -Wno-deprecated-declarations
-OctopusIMMultiPush_FRAMEWORKS := UIKit Security
+OctopusIMMultiPush_FRAMEWORKS := UIKit Security AVFoundation CoreLocation
 
 include $(THEOS)/makefiles/tweak.mk
