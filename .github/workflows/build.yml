@@ -1,4 +1,4 @@
-name: Build OctopusIMMultiPush Tweak
+name: Build MultiPush Dylib
 
 on:
   push:
@@ -7,44 +7,37 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  THEOS: ${{ github.workspace }}/theos
-
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-13
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Install Theos
-        run: |
-          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)" \
-            || true
-          if [ ! -d "$THEOS" ]; then
-            git clone --recursive https://github.com/theos/theos.git "$THEOS"
-          fi
-          echo "THEOS=$THEOS" >> $GITHUB_ENV
+    - name: Set up Theos Environment
+      run: |
+        git clone --recursive https://github.com/theos/theos.git $HOME/theos
+        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
-      - name: Setup Theos environment
-        run: |
-          export THEOS=${{ env.THEOS }}
-          ls -la "$THEOS/makefiles/" || echo "makefiles not found"
-          ls -la "$THEOS/lib/" || echo "lib not found"
+    - name: Set up iOS SDK
+      run: |
+        git clone https://github.com/theos/sdks.git $HOME/theos/sdks
 
-      - name: Build Tweak
-        run: |
-          export THEOS=${{ env.THEOS }}
-          make clean
-          make FINALPACKAGE=1
+    - name: Compile Dylib
+      run: |
+        export THEOS=$HOME/theos
+        make clean package FINALPACKAGE=1
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: OctopusIMMultiPush-${{ github.sha }}
-          path: |
-            .theos/obj/debug/OctopusIMMultiPush.dylib
-            .theos/packages/*.deb
-          if-no-files-found: warn
-          retention-days: 30
+    - name: Find and Stage Dylib
+      run: |
+        mkdir -p out_artifact
+        find .theos/obj/ -name "*.dylib" -exec cp {} out_artifact/ \;
+        echo "=== 已找到并提取以下编译产物 ==="
+        ls -la out_artifact/
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: OctopusIMMultiPush-Dylib
+        path: out_artifact/
