@@ -2,14 +2,13 @@
 #import <Security/Security.h>
 
 // ============================================================================
-// 一、 运行时动态类与方法安全声明
+// 一、 运行时动态类安全声明（严格遵循 558 报告标准）
 // ============================================================================
 @interface AppService : NSObject
 + (id)sharedInstance;
 - (void)startSocketService;
 @end
 
-// 获取当前分身沙盒的唯一标识
 static NSString* getSafeInstanceIdentifier(void) {
     static NSString *instanceID = nil;
     static dispatch_once_t onceToken;
@@ -25,7 +24,7 @@ static NSString* getSafeInstanceIdentifier(void) {
 }
 
 // ============================================================================
-// 二、 Keychain 动态隔离区（稳定版）
+// 二、 Keychain 动态隔离区（kSecAttrComment 顶级安全方案）
 // ============================================================================
 static OSStatus (*orig_SecItemAdd)(CFDictionaryRef attributes, CFTypeRef *result);
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -95,94 +94,46 @@ OSStatus new_SecItemDelete(CFDictionaryRef query) {
 %end
 
 // ============================================================================
-// 四、 核心杀招：多实例底层 RunLoop 物理强行常驻引擎
+// 四、 核心突变：通知广播震荡与系统级重连诱导
 // ============================================================================
-static UIBackgroundTaskIdentifier dynamicBgTask = UIBackgroundTaskInvalid;
-static NSTimer *keepAliveLoopTimer = nil;
-
-// 核心保活：强制无限续航长连接任务
-void initiateInfiniteKeepAliveLoop(UIApplication *application) {
-    // 1. 如果当前任务已存在，先平滑销毁
-    if (dynamicBgTask != UIBackgroundTaskInvalid) {
-        [application endBackgroundTask:dynamicBgTask];
-        dynamicBgTask = UIBackgroundTaskInvalid;
-    }
-    
-    // 2. 强行向系统申请全新的后台执行时间
-    dynamicBgTask = [application beginBackgroundTaskWithExpirationHandler:^{
-        NSLog(@"[MultiPush] 警告：12秒期限临界点到达！强制进行物理级线程重启续命...");
-        
-        // 当系统试图挂起（杀死）我们的瞬间，通过自我迭代，强行在底层无限循环续命
-        initiateInfiniteKeepAliveLoop(application);
-    }];
-    
-    // 3. 每当系统要切断网络时，主动强制发送长连接活性探测包，死死顶住 Socket
-    id spSocket = [NSClassFromString(@"SPSocket") sharedInstance];
-    SEL heartbeatSel = NSSelectorFromString(@"socketHeartheadReq");
-    if ([spSocket respondsToSelector:heartbeatSel]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        [spSocket performSelector:heartbeatSel];
-#pragma clang diagnostic pop
-        NSLog(@"[MultiPush] 成功在锁屏后台灌入强行心跳");
-    }
-}
+static UIBackgroundTaskIdentifier safeBgTaskToken = UIBackgroundTaskInvalid;
 
 %hook AppDelegate
 
 - (void)applicationDidEnterBackground:(UIApplication *)application {
     %orig;
-    NSLog(@"[MultiPush] 分身应用切入后台/锁屏 -> 启动商业级常驻保活引擎");
+    NSLog(@"[MultiPush] 分身应用切入后台/锁屏");
     
-    // 开启物理级无限后台循环
-    initiateInfiniteKeepAliveLoop(application);
-    
-    // 建立后台高频强行重连定时器，每 10 秒死死守住 Socket 活性，彻底打破 12 秒必断的死穴
-    if (!keepAliveLoopTimer) {
-        keepAliveLoopTimer = [NSTimer scheduledTimerWithTimeInterval:10.0 
-                                                             repeats:YES 
-                                                               block:^(NSTimer * _Nonnull timer) {
-            NSLog(@"[MultiPush] 锁屏状态守护：正在强制唤醒 Socket 线程状态...");
-            
-            id spSocket = [NSClassFromString(@"SPSocket") sharedInstance];
-            if (spSocket) {
-                // 重置卡死标记
-                @try {
-                    [spSocket setValue:@(YES) forKey:@"_isSocketLoginSuccess"];
-                } @catch (NSException *e) {}
-            }
-            
-            // 触发长连接守护
-            AppService *appService = [NSClassFromString(@"AppService") sharedInstance];
-            if (appService && [appService respondsToSelector:@selector(startSocketService)]) {
-                [appService startSocketService];
-            }
-        }];
-        // 将定时器强行塞入系统最高等级的 RunLoop 通道，确保锁屏也不被冻结
-        [[NSRunLoop currentRunLoop] addTimer:keepAliveLoopTimer forMode:NSRunLoopCommonModes];
-    }
+    safeBgTaskToken = [application beginBackgroundTaskWithExpirationHandler:^{
+        [application endBackgroundTask:safeBgTaskToken];
+        safeBgTaskToken = UIBackgroundTaskInvalid;
+    }];
 }
 
 - (void)applicationWillEnterForeground:(UIApplication *)application {
     %orig;
-    NSLog(@"[MultiPush] 分身应用返回前台 -> 释放常驻挂机组件，回归常规模式");
+    NSLog(@"[MultiPush] 分身返回前台 -> 正在执行系统级网络震荡重连机制...");
     
-    // 清理后台常驻组件，防止前台产生内存积压
-    if (keepAliveLoopTimer) {
-        [keepAliveLoopTimer invalidate];
-        keepAliveLoopTimer = nil;
+    if (safeBgTaskToken != UIBackgroundTaskInvalid) {
+        [application endBackgroundTask:safeBgTaskToken];
+        safeBgTaskToken = UIBackgroundTaskInvalid;
     }
     
-    if (dynamicBgTask != UIBackgroundTaskInvalid) {
-        [application endBackgroundTask:dynamicBgTask];
-        dynamicBgTask = UIBackgroundTaskInvalid;
-    }
+    // 核心打法：通过原应用总线上报"鉴权失效"和"强制下线"官方广播
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"notification.name.socket.authFailed" object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"notification.name.socket.ForceOffline" object:nil];
+        NSLog(@"[MultiPush] 成功向总线注入官方断线状态广播");
+    });
     
-    // 前台干净重建连接
-    AppService *appService = [NSClassFromString(@"AppService") sharedInstance];
-    if (appService && [appService respondsToSelector:@selector(startSocketService)]) {
-        [appService startSocketService];
-    }
+    // 延迟 0.5 秒，在状态完全抹干净后，以最顶层的全新业务身份唤醒长连接服务
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        AppService *service = [NSClassFromString(@"AppService") sharedInstance];
+        if (service && [service respondsToSelector:@selector(startSocketService)]) {
+            NSLog(@"[MultiPush] 正在执行 startSocketService 初始化干净连接...");
+            [service startSocketService];
+        }
+    });
 }
 
 %end
